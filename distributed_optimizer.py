@@ -57,9 +57,9 @@ class _DistributedOptimizer(torch.optim.Optimizer):
         self._update_times = {} # allreduce times
         self.train_epoch = 0
         self.train_iter = 0
-        self._dynamic_densities = [0.015625, 0.004, 0.001]
+        #self._dynamic_densities = [0.015625, 0.004, 0.001]
         #self._dynamic_densities = [0.25, 0.0625, 0.015625, 0.004, 0.001] # the setting used in DGC
-        #self._dynamic_densities = None 
+        self._dynamic_densities = None 
         logger.info('_dynamic_densities: %s', self._dynamic_densities)
         self._selected_num_gradients = []
 
@@ -415,7 +415,7 @@ class _DistributedOptimizer(torch.optim.Optimizer):
         tensor_compressed, ctx, selected_values = self._compression.compress(tensor, name, ratio=density)
         self._selected_num_gradients.append(int(ctx.numel()))
 
-        if settings.LOGGING_GRADIENTS and rank() == 0:
+        if settings.LOGGING_GRADIENTS and rank() == 0 and self.train_iter % 100 == 0:
             grads = tensor.cpu().numpy()
             np.save('%s/r%d_gradients_iter_%d' % (self._gradient_path, rank(), self.train_iter), grads)
         indexes = ctx
