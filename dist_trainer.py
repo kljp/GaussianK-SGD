@@ -87,7 +87,7 @@ def ssgd(dnn, dataset, data_dir, nworkers, lr, batch_size, nsteps_update, max_ep
             times.append(time.time()-s)
             if i % display == 0 and i > 0: 
                 time_per_iter = np.mean(times)
-                logger.warn('Time per iteration including communication: %f, Speed: %f images/s', time_per_iter, batch_size * nsteps_update / time_per_iter)
+                logger.info('Time per iteration including communication: %f, Speed: %f images/s', time_per_iter, batch_size * nsteps_update / time_per_iter)
                 times = []
         optimizer.increase_one_epoch()
 
