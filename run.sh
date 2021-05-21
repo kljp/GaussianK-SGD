@@ -8,7 +8,8 @@ nwpernode=4
 nstepsupdate=1
 MPIPATH=/usr/local/openmpi/openmpi-4.0.1
 PY=python
-GRADSPATH=./logs/iclr
+#GRADSPATH=./logs/iclr
+GRADSPATH=/tmp/iclr
 
 $MPIPATH/bin/mpirun --oversubscribe --prefix $MPIPATH -np $nworkers -hostfile cluster$nworkers -bind-to none -map-by slot \
     -x LD_LIBRARY_PATH -x PATH \

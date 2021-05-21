@@ -36,7 +36,7 @@ from settings import logger, ADAPTIVE_MERGE, ADAPTIVE_SPARSE, DEBUG
 
 
 class _DistributedOptimizer(torch.optim.Optimizer):
-    def __init__(self, params, named_parameters, compression, is_sparse=False, density=0.001, seq_layernames=None, layerwise_times=None, norm_clip=None, threshold=0, writer=None, gradient_path=None):
+    def __init__(self, params, named_parameters, compression, is_sparse=False, density=0.001, seq_layernames=None, layerwise_times=None, norm_clip=None, threshold=0, writer=None, gradient_path=None, momentum_correction=False):
         super(self.__class__, self).__init__(params)
         self._compression = compression
         self._sparse = is_sparse
@@ -57,9 +57,13 @@ class _DistributedOptimizer(torch.optim.Optimizer):
         self._update_times = {} # allreduce times
         self.train_epoch = 0
         self.train_iter = 0
-        self._dynamic_densities = [0.015625, 0.004, 0.001]
+        self.momentum_correction = momentum_correction
+        #self._dynamic_densities = [0.015625, 0.004, 0.001]
         #self._dynamic_densities = [0.25, 0.0625, 0.015625, 0.004, 0.001] # the setting used in DGC
-        #self._dynamic_densities = None 
+        if density <= 0.001:
+            self._dynamic_densities = [0.25, 0.0625, 0.015625, 0.004, 0.001] # the setting used in DGC
+        else:
+            self._dynamic_densities = None 
         logger.info('_dynamic_densities: %s', self._dynamic_densities)
         self._selected_num_gradients = []
 
@@ -415,7 +419,7 @@ class _DistributedOptimizer(torch.optim.Optimizer):
         tensor_compressed, ctx, selected_values = self._compression.compress(tensor, name, ratio=density)
         self._selected_num_gradients.append(int(ctx.numel()))
 
-        if settings.LOGGING_GRADIENTS and rank() == 0:
+        if settings.LOGGING_GRADIENTS and rank() == 0 and self.train_iter % 100 == 0:
             grads = tensor.cpu().numpy()
             np.save('%s/r%d_gradients_iter_%d' % (self._gradient_path, rank(), self.train_iter), grads)
         indexes = ctx
@@ -431,7 +435,19 @@ class _DistributedOptimizer(torch.optim.Optimizer):
             assert not p.grad.requires_grad
             if not self.local:
                 name = self._parameter_names.get(p)
-                new_name, new_tensor = self._push_to_buffer(name, p.grad.data)
+                d_p = p.grad.data
+
+                if self.momentum_correction and self._sparse:
+                    param_state = self.state[p]
+                    momentum = self.param_groups[0]['momentum']
+                    #momentum = 0.9
+                    if 'momentum_buffer' not in param_state:
+                        buf = param_state['momentum_buffer'] = torch.zeros_like(p.data)
+                    buf = param_state['momentum_buffer']
+                    buf.mul_(momentum).add_(d_p)
+                    d_p = buf
+
+                new_name, new_tensor = self._push_to_buffer(name, d_p)
                 if new_tensor is not None:
                     density = self.get_current_density(name=new_name)
                     if self._sparse and density < 1:
@@ -530,15 +546,64 @@ class _DistributedOptimizer(torch.optim.Optimizer):
             ars.clear()
             ups.clear()
 
+    def _step_with_mc(self, closure=None):
+        """Performs a single optimization step.
+            Arguments:
+                closure (callable, optional): A closure that reevaluates the model
+                    and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+    
+        offset = 0
+        density = self.get_current_density()
+        for group in self.param_groups:
+            weight_decay = group['weight_decay']
+            momentum = group['momentum']
+            dampening = group['dampening']
+            nesterov = group['nesterov']
+
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                d_p = p.grad.data
+                name = self._parameter_names.get(p)
+                if weight_decay != 0:
+                    wd = p.data
+                    d_p.add_(weight_decay, wd)
+                if momentum != 0 and not self.momentum_correction:
+                    param_state = self.state[p]
+                    if 'momentum_buffer' not in param_state:
+                        param_state['momentum_buffer'] = torch.zeros_like(p.data)
+                        buf = param_state['momentum_buffer']
+                        buf.mul_(momentum).add_(d_p)
+                    else:
+                        buf = param_state['momentum_buffer']
+                        buf.mul_(momentum).add_(1 - dampening, d_p)
+                    if nesterov:
+                        d_p = d_p.add(momentum, buf)
+                    else:
+                        d_p = buf
+                p.data.add_(-group['lr'], d_p)
+                if momentum != 0 and self.momentum_correction and density < 1:
+                    param_state = self.state[p]
+                    buf = param_state['momentum_buffer']
+                    if self._compression.zc is not None:
+                        buf.view(-1).mul_(self._compression.zc[offset:offset+d_p.numel()])
+                        offset += d_p.numel()
+        return loss
 
     def step(self, closure=None):
         if not self.local:
             self.synchronize()
+        if self.momentum_correction and self._sparse:
+            return self._step_with_mc(closure)
         return super(self.__class__, self).step(closure)
 
 
 
-def DistributedOptimizer(optimizer, named_parameters=None, compression=None, is_sparse=False, density=0.001, seq_layernames=None, layerwise_times=None, norm_clip=None, threshold=0, writer=None, gradient_path=None):
+def DistributedOptimizer(optimizer, named_parameters=None, compression=None, is_sparse=False, density=0.001, seq_layernames=None, layerwise_times=None, norm_clip=None, threshold=0, writer=None, gradient_path=None, momentum_correction=False):
     """
     An optimizer that wraps another torch.optim.Optimizer, using an allreduce to
     average gradient values before applying gradients to model weights.
@@ -574,7 +639,7 @@ def DistributedOptimizer(optimizer, named_parameters=None, compression=None, is_
     cls = type(optimizer.__class__.__name__, (optimizer.__class__,),
                dict(_DistributedOptimizer.__dict__))
 
-    return cls(optimizer.param_groups, named_parameters, compression, is_sparse, density, seq_layernames=seq_layernames, layerwise_times=layerwise_times, norm_clip=None, threshold=threshold, writer=writer, gradient_path=gradient_path)
+    return cls(optimizer.param_groups, named_parameters, compression, is_sparse, density, seq_layernames=seq_layernames, layerwise_times=layerwise_times, norm_clip=None, threshold=threshold, writer=writer, gradient_path=gradient_path, momentum_correction=momentum_correction)
 
 
 def broadcast_parameters(params, root_rank):

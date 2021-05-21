@@ -13,14 +13,14 @@ import distributed_optimizer as hvd
 from tensorboardX import SummaryWriter
 from compression import compressors
 from profiling import benchmark
-from mpi4py import MPI
-comm = MPI.COMM_WORLD
+#from mpi4py import MPI
+#comm = MPI.COMM_WORLD
 writer = None
 
 from settings import logger, formatter
 
 
-def ssgd(dnn, dataset, data_dir, nworkers, lr, batch_size, nsteps_update, max_epochs, nwpernode, pretrain, num_steps, compressor, density, threshold, gradient_path=None):
+def ssgd(dnn, dataset, data_dir, nworkers, lr, batch_size, nsteps_update, max_epochs, nwpernode, pretrain, num_steps, compressor, density, threshold, gradient_path=None, momentum_correction=False):
     rank = hvd.rank()
     torch.cuda.set_device(rank%nwpernode)
     if rank != 0:
@@ -37,7 +37,7 @@ def ssgd(dnn, dataset, data_dir, nworkers, lr, batch_size, nsteps_update, max_ep
 
     if settings.ADAPTIVE_MERGE or settings.ADAPTIVE_SPARSE:
         seq_layernames, layerwise_times, layerwise_sizes = benchmark(trainer)
-        layerwise_times = comm.bcast(layerwise_times, root=0)
+        #layerwise_times = comm.bcast(layerwise_times, root=0)
         if rank == 0:
             logger.info('layerwise backward times: %s', list(layerwise_times))
             logger.info('layerwise backward sizes: %s', list(layerwise_sizes))
@@ -53,7 +53,7 @@ def ssgd(dnn, dataset, data_dir, nworkers, lr, batch_size, nsteps_update, max_ep
     elif dnn == 'lstman4':
         norm_clip = 400
 
-    optimizer = hvd.DistributedOptimizer(trainer.optimizer, named_parameters=trainer.net.named_parameters(), compression=compressors[compressor], is_sparse=is_sparse, density=density, seq_layernames=seq_layernames, layerwise_times=layerwise_times, norm_clip=norm_clip, threshold=threshold, writer=writer, gradient_path=gradient_path)
+    optimizer = hvd.DistributedOptimizer(trainer.optimizer, named_parameters=trainer.net.named_parameters(), compression=compressors[compressor], is_sparse=is_sparse, density=density, seq_layernames=seq_layernames, layerwise_times=layerwise_times, norm_clip=norm_clip, threshold=threshold, writer=writer, gradient_path=gradient_path, momentum_correction=momentum_correction)
     hvd.broadcast_parameters(trainer.net.state_dict(), root_rank=0)
     trainer.update_optimizer(optimizer)
     iters_per_epoch = trainer.get_num_of_training_samples() // (nworkers * batch_size * nsteps_update)
@@ -87,12 +87,14 @@ def ssgd(dnn, dataset, data_dir, nworkers, lr, batch_size, nsteps_update, max_ep
             times.append(time.time()-s)
             if i % display == 0 and i > 0: 
                 time_per_iter = np.mean(times)
-                logger.warn('Time per iteration including communication: %f, Speed: %f images/s', time_per_iter, batch_size * nsteps_update / time_per_iter)
+                logger.info('Time per iteration including communication: %f, Speed: %f images/s', time_per_iter, batch_size * nsteps_update / time_per_iter)
                 times = []
         optimizer.increase_one_epoch()
 
 
 if __name__ == '__main__':
+    torch.multiprocessing.set_start_method('spawn')
+
     parser = argparse.ArgumentParser(description="AllReduce trainer")
     parser.add_argument('--batch-size', type=int, default=32)
     parser.add_argument('--nsteps-update', type=int, default=1)
@@ -109,11 +111,15 @@ if __name__ == '__main__':
     parser.add_argument('--compressor', type=str, default='sigmathresallgather', choices=compressors.keys(), help='Specify the compressors if \'compression\' is open')
     parser.add_argument('--density', type=float, default=1, help='Density for sparsification')
     parser.add_argument('--threshold', type=int, default=524288000, help='Specify the threshold for gradient merging')
+    parser.add_argument('--momentum-correction', type=int, default=0, help='Set it to 1 to turn on momentum_correction for TopK sparsification, default is 0')
     args = parser.parse_args()
     batch_size = args.batch_size * args.nsteps_update
+    momentum_correction = args.momentum_correction != 0
     prefix = settings.PREFIX
     if args.density < 1:
         prefix = 'comp-' + args.compressor + '-' + prefix
+        if momentum_correction:
+            prefix = 'mc-'+ prefix
     logdir = 'allreduce-%s-thres-%dkbytes/%s-n%d-bs%d-lr%.4f-ns%d-ds%s' % (prefix, args.threshold/1024, args.dnn, args.nworkers, batch_size, args.lr, args.nsteps_update, str(args.density)) 
     relative_path = './logs/%s'%logdir
     gradient_relative_path = None 
@@ -133,4 +139,4 @@ if __name__ == '__main__':
     hdlr.setFormatter(formatter)
     logger.addHandler(hdlr) 
     logger.info('Configurations: %s', args)
-    ssgd(args.dnn, args.dataset, args.data_dir, args.nworkers, args.lr, args.batch_size, args.nsteps_update, args.max_epochs, args.nwpernode, args.pretrain, args.num_steps, args.compressor, args.density, args.threshold, gradient_relative_path)
+    ssgd(args.dnn, args.dataset, args.data_dir, args.nworkers, args.lr, args.batch_size, args.nsteps_update, args.max_epochs, args.nwpernode, args.pretrain, args.num_steps, args.compressor, args.density, args.threshold, gradient_relative_path, momentum_correction=momentum_correction)
