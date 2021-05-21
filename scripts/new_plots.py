@@ -108,8 +108,9 @@ def generate_random(d, t='gaussian'):
     return data
 
 
-def func_powerlaw(x, m, c1, c0):
-    return c0 + x**m * c1
+def func_powerlaw(x, m, b, a):
+    return b + x**m * a 
+    #return b * (x**m * a)
 
 def fit_powerlaw_with_distribution():
     fig, ax= plt.subplots()
@@ -139,7 +140,7 @@ def fit_powerlaw_with_distribution():
 def fit_powerlaw():
     fig, ax= plt.subplots()
     iterations=range(0, 1000) 
-    ratio = 0.01
+    ratio = 0.001
     for i in iterations:
         if i % 200 != 0 or i == 0:
             continue
@@ -151,6 +152,8 @@ def fit_powerlaw():
         #grad = generate_random(d, t=distribution)
         abs_grad = np.abs(grad)
         sorted_grad = np.sort(abs_grad)[::-1]
+        #sorted_grad = np.power(sorted_grad, 2)
+        #sorted_grad /= np.linalg.norm(sorted_grad)
         x = np.arange(1, d+1)
         y = np.array(sorted_grad) 
         sol1, _ = curve_fit(func_powerlaw, x, y, p0 = np.asarray([1,10**5,0]))
@@ -162,11 +165,19 @@ def fit_powerlaw():
         topk_alpha = compute_alpha(k, d, -m, c1, c0)
         randk_alpha = 1-ratio
         retangle_alpha = (1-ratio)**2
-        #print('iter-%d topk_alpha: ' % i, topk_alpha, ', randk_alpha: ', randk_alpha, ', retangle_alpha: ', retangle_alpha)
+        print('iter-%d topk_alpha: ' % i, topk_alpha, ', randk_alpha: ', randk_alpha, ', retangle_alpha: ', retangle_alpha)
     plt.xlabel('i')
     plt.ylabel(r'$\pi(i)$')
     plt.legend()
     plt.show()
+
+def compared_bounds():
+    d = int(25e6)
+    ratio = 0.001
+    k = int(ratio*d)
+    bound1 = 1-ratio
+    bound2 = (1-ratio)**2
+    #bound3 = 
 
 
 if __name__ == '__main__':
