@@ -1,0 +1,66 @@
+wandb_version: 1
+
+_wandb:
+  desc: null
+  value:
+    cli_version: 0.10.22
+    code_path: code/dist_trainer.py
+    framework: torch
+    is_jupyter_run: false
+    is_kaggle_kernel: false
+    python_version: 3.7.4
+    t:
+      1:
+      - 1
+      4: 3.7.4
+      5: 0.10.22
+      8:
+      - 5
+batch_size:
+  desc: null
+  value: 64
+compressor:
+  desc: null
+  value: topk
+data_dir:
+  desc: null
+  value: /localdata/ILSVRC2012_dataset
+dataset:
+  desc: null
+  value: imagenet
+density:
+  desc: null
+  value: 1.0
+dnn:
+  desc: null
+  value: resnet50
+lr:
+  desc: null
+  value: 0.8
+max_epochs:
+  desc: null
+  value: 95
+momentum_correction:
+  desc: null
+  value: 1
+nsteps_update:
+  desc: null
+  value: 1
+num_steps:
+  desc: null
+  value: 35
+nworkers:
+  desc: null
+  value: 32
+nwpernode:
+  desc: null
+  value: 4
+pretrain:
+  desc: null
+  value: null
+saved_dir:
+  desc: null
+  value: /tmp/iclr
+threshold:
+  desc: null
+  value: 524288000

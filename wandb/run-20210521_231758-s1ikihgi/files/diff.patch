@@ -1,0 +1,205 @@
+diff --git a/dist_trainer.py b/dist_trainer.py
+index fc2bf1a..fc4b688 100644
+--- a/dist_trainer.py
++++ b/dist_trainer.py
+@@ -7,6 +7,7 @@ import argparse, os
+ import settings
+ import utils
+ import logging
++import wandb
+ 
+ from dl_trainer import DLTrainer, _support_datasets, _support_dnns
+ import distributed_optimizer as hvd
+@@ -139,4 +140,8 @@ if __name__ == '__main__':
+     hdlr.setFormatter(formatter)
+     logger.addHandler(hdlr) 
+     logger.info('Configurations: %s', args)
++
++    if hvd.rank() == 0:
++        wandb.init(project='gtopk', entity='shyhuai', name=logfile, config=args)
++
+     ssgd(args.dnn, args.dataset, args.data_dir, args.nworkers, args.lr, args.batch_size, args.nsteps_update, args.max_epochs, args.nwpernode, args.pretrain, args.num_steps, args.compressor, args.density, args.threshold, gradient_relative_path, momentum_correction=momentum_correction)
+diff --git a/dl_trainer.py b/dl_trainer.py
+index a0f0163..013a0a1 100644
+--- a/dl_trainer.py
++++ b/dl_trainer.py
+@@ -34,7 +34,7 @@ import ptb_reader
+ import models.lstm as lstmpy
+ from torch.autograd import Variable
+ import json
+-
++import wandb
+ 
+ if settings.USE_FP16:
+     try:
+@@ -375,7 +375,11 @@ class DLTrainer:
+         self.train_sampler = train_sampler
+         self.trainloader = torch.utils.data.DataLoader(trainset, batch_size=self.batch_size,
+                                                   shuffle=shuffle, num_workers=NUM_CPU_THREADS, sampler=train_sampler)
+-        self.testloader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size,
++        if self.nworkers > 1:
++            test_sampler = torch.utils.data.distributed.DistributedSampler(testset, num_replicas=self.nworkers, rank=self.rank)
++            self.testloader = torch.utils.data.DataLoader(test_dataset, batch_size=self.batch_size, sampler=test_sampler, shuffle=False, num_workers=1)
++        else:
++            self.testloader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size,
+                                                  shuffle=False, num_workers=1)
+         self.classes = ('plane', 'car', 'bird', 'cat',
+                'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
+@@ -630,19 +634,22 @@ class DLTrainer:
+         s = time.time()
+         # zero the parameter gradients
+         #self.optimizer.zero_grad()
++        train_loss = utils.HVDMetric('train_loss')
++        train_accuracy = utils.HVDMetric('train_accuracy')
+         for i in range(num_of_iters):
+             self.adjust_learning_rate(self.train_epoch, self.optimizer)
+             if self.train_iter % self.num_batches_per_epoch == 0 and self.train_iter > 0:
+-                self.train_epoch += 1
++                if self.rank == 0:
++                    wandb.log({"loss": self.avg_loss_per_epoch, "epoch": self.train_epoch})
+                 logger.info('train iter: %d, num_batches_per_epoch: %d', self.train_iter, self.num_batches_per_epoch)
+                 logger.info('Epoch %d, avg train acc: %f, lr: %f, avg loss: %f' % (self.train_iter//self.num_batches_per_epoch, np.mean(self.train_acc_top1), self.lr, self.avg_loss_per_epoch/self.num_batches_per_epoch))
+ 
++
+                 if self.rank == 0 and self.writer is not None:
+                     self.writer.add_scalar('cross_entropy', self.avg_loss_per_epoch/self.num_batches_per_epoch, self.train_epoch)
+                     self.writer.add_scalar('top-1_acc', np.mean(self.train_acc_top1), self.train_epoch)
+-                if self.rank == 0:
+-                    with torch.no_grad():
+-                        self.test(self.train_epoch)
++                with torch.no_grad():
++                    self.test(self.train_epoch)
+                 self.sparsities = []
+                 self.compression_ratios = []
+                 self.communication_sizes = []
+@@ -665,6 +672,7 @@ class DLTrainer:
+                     #    self.remove_dict(state)
+                 if self.train_sampler and (self.nworkers > 1):
+                     self.train_sampler.set_epoch(self.train_epoch)
++                self.train_epoch += 1
+ 
+             ss = time.time()
+             if data is None:
+@@ -693,7 +701,7 @@ class DLTrainer:
+                 loss = self.criterion(out, labels_cpu, output_sizes, target_sizes)
+                 #torch.cuda.synchronize()
+                 self.forwardtime += (time.time() - sforward)
+-                loss = loss / inputs.size(0)  # average the loss by minibatch
++                #loss = loss / inputs.size(0)  # average the loss by minibatch
+             elif self.dnn == 'lstm' :
+                 hidden = lstmpy.repackage_hidden(hidden)
+                 outputs, hidden = self.net(inputs, hidden)
+@@ -717,14 +725,17 @@ class DLTrainer:
+             loss_value = loss.item()
+             #torch.cuda.synchronize()
+             self.backwardtime += (time.time() - sbackward)
++            #train_loss.update(loss)
+ 
+-            self.loss += loss_value 
++            self.loss += loss.item() #train_loss.avg
+ 
+-            self.avg_loss_per_epoch += loss_value
++            self.avg_loss_per_epoch += self.loss #train_loss.avg
+ 
+             if self.dnn not in ['lstm', 'lstman4']:
+                 acc1, = self.cal_accuracy(outputs, labels, topk=(1,))
+-                self.train_acc_top1.append(float(acc1))
++                #train_accuracy.update(acc1)
++                #self.train_acc_top1.append(train_accuracy.avg)
++                self.train_acc_top1.append(acc1.item())
+                 
+             self.train_iter += 1
+         self.num_of_updates_during_comm += 1
+@@ -745,6 +756,11 @@ class DLTrainer:
+ 
+     def test(self, epoch):
+         self.net.eval()
++
++        test_loss = utils.HVDMetric('val_loss')
++        test_accuracy_top1 = utils.HVDMetric('val_accuracy_top1')
++        test_accuracy_top5 = utils.HVDMetric('val_accuracy_top5')
++
+         test_loss = 0
+         correct = 0
+         top1_acc = []
+@@ -776,7 +792,7 @@ class DLTrainer:
+                 outputs, hidden = self.net(inputs, hidden)
+                 tt = torch.squeeze(labels.view(-1, self.net.batch_size * self.net.num_steps))
+                 loss = self.criterion(outputs.view(-1, self.net.vocab_size), tt)
+-                test_loss += loss.data[0]
++                test_loss += loss.data.item()
+                 costs += loss.data[0] * self.net.num_steps
+                 total_steps += self.net.num_steps
+             elif self.dnn == 'lstman4':
+@@ -805,13 +821,16 @@ class DLTrainer:
+                 loss = self.criterion(outputs, labels)
+ 
+                 acc1, acc5 = self.cal_accuracy(outputs, labels, topk=(1, 5))
+-                top1_acc.append(float(acc1))
+-                top5_acc.append(float(acc5))
++                #top1_acc.append(float(acc1))
++                #top5_acc.append(float(acc5))
+ 
+-                test_loss += loss.data.item()
++                #test_loss += loss.data.item()
++                test_loss.update(loss)
++                test_accuracy_top1.update(acc1)
++                test_accuracy_top5.update(acc5)
+             total += labels.size(0)
+             total_iters += 1
+-        test_loss /= total_iters
++        #test_loss /= total_iters
+         if self.dnn not in ['lstm', 'lstman4']:
+             acc = np.mean(top1_acc)
+             acc5 = np.mean(top5_acc)
+@@ -823,9 +842,14 @@ class DLTrainer:
+             acc = wer
+             acc5 = 0.0
+         loss = float(test_loss)/total
+-        logger.info('Epoch %d, lr: %f, val loss: %f, val top-1 acc: %f, top-5 acc: %f' % (epoch, self.lr, test_loss, acc, acc5))
++        logger.info('Epoch %d, lr: %f, val loss: %f, val top-1 acc: %f, top-5 acc: %f' % (epoch, self.lr, test_loss.avg, test_accuracy_top1.avg, test_accuracy_top5.avg))
++        if hvd.rank() == 0:
++            wandb.log({
++                "val top-1 acc": test_accuracy_top1.avg, 
++                "val top-5 acc": test_accuracy_top5.avg,
++                "epoch": epoch})
+         self.net.train()
+-        return acc
++        return test_accuracy_top1.avg
+ 
+     def update_model(self):
+         self.optimizer.step()
+diff --git a/utils.py b/utils.py
+index ada8ef0..9f0181e 100644
+--- a/utils.py
++++ b/utils.py
+@@ -3,6 +3,8 @@ import time
+ import os
+ import numpy as np
+ import scipy.stats as stats
++import torch
++import horovod.torch as hvd
+ 
+ 
+ def gen_random_id():
+@@ -137,3 +139,20 @@ def gen_threshold_from_normal_distribution(p_value, mu, sigma):
+     zvalue = stats.norm.ppf((1-p_value)/2)
+     return mu+zvalue*sigma, mu-zvalue*sigma
+ 
++
++class HVDMetric(object):
++    def __init__(self, name):
++        self.name = name
++        self.sum = 0 #torch.tensor(0.)
++        self.n = 0 #torch.tensor(0.)
++        self.val = 0.
++
++    def update(self, val, n=1):
++        self.val = val.item()
++        self.sum += float(hvd.allreduce(val.detach().cpu() * n, name=self.name, average=False))
++        self.n += n * hvd.size()
++
++    @property
++    def avg(self):
++        return self.sum / self.n
++

@@ -3,6 +3,8 @@ import time
 import os
 import numpy as np
 import scipy.stats as stats
+import torch
+import horovod.torch as hvd
 
 
 def gen_random_id():
@@ -136,4 +138,21 @@ def predict_allreduce_time_with_size(alpha, beta, size, P):
 def gen_threshold_from_normal_distribution(p_value, mu, sigma):
     zvalue = stats.norm.ppf((1-p_value)/2)
     return mu+zvalue*sigma, mu-zvalue*sigma
+
+
+class HVDMetric(object):
+    def __init__(self, name):
+        self.name = name
+        self.sum = 0 #torch.tensor(0.)
+        self.n = 0 #torch.tensor(0.)
+        self.val = 0.
+
+    def update(self, val, n=1):
+        self.val = val.item()
+        self.sum += float(hvd.allreduce(val.detach().cpu() * n, name=self.name, average=False))
+        self.n += n * hvd.size()
+
+    @property
+    def avg(self):
+        return self.sum / self.n
 
