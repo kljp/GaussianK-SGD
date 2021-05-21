@@ -17,3 +17,11 @@ bk/
 __pycache__
 .DS_Store
 mstopk
+
+*.tar.gz
+pdfresults/
+wandb/
+wandb/runs*
+predict/
+predict
+weights
