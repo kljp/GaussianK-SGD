@@ -7,6 +7,7 @@ import time
 import math
 import utils
 from scipy import stats
+import distributed_optimizer as hvd
 
 
 class NoneCompressor():
@@ -32,6 +33,7 @@ class TopKCompressor():
     c = 0
     t = 0.
     name = 'topk'
+    zc = None
 
     @staticmethod
     def clear():
@@ -60,6 +62,12 @@ class TopKCompressor():
 
             TopKCompressor.values[name] = values
             TopKCompressor.indexes[name] = indexes
+
+            if TopKCompressor.zc is None:
+                TopKCompressor.zc = torch.ones(tensor.numel(), dtype=torch.float32, device=tensor.device)
+            TopKCompressor.zc.fill_(1.0)
+            TopKCompressor.zc[indexes] = 0.0
+
             return tensor, indexes, values
 
     @staticmethod
@@ -121,6 +129,7 @@ class GaussianCompressor():
     c = 0
     t = 0.
     name = 'gaussion'
+    zc = None
 
     @staticmethod
     def clear():
@@ -144,24 +153,44 @@ class GaussianCompressor():
             mean = torch.mean(tensor)
             left_thres, right_thres = utils.gen_threshold_from_normal_distribution(1-ratio, float(mean), float(std))
             abs_tensor = torch.abs(tensor)
+            abs_indexes = torch.arange(0, abs_tensor.numel(), device=tensor.device)
             loops = 0
-            while loops < 3:
+            real_indexes = torch.ones(0, device=tensor.device, dtype=torch.int64)
+            last_large = False
+            while loops < 100:
                 one_indexes = abs_tensor > right_thres
+                zero_indexes = ~one_indexes
                 indexes = one_indexes.nonzero().data.squeeze().view(-1)
-                if indexes.numel() < 2*k/3:
-                    right_thres *= 0.5
-                elif indexes.numel() > 4*k/3:
-                    right_thres *= 1.5
+                last_large = False
+                if real_indexes.numel() + indexes.numel() < 2*k/3:
+                    real_indexes = torch.cat([real_indexes, abs_indexes[indexes]])
+                    abs_tensor = abs_tensor[zero_indexes]
+                    abs_indexes = abs_indexes[zero_indexes]
+                    right_thres *= 0.1
+                elif real_indexes.numel() + indexes.numel() > 4*k/3:
+                    last_large = True
+                    abs_tensor = abs_tensor[one_indexes]
+                    abs_indexes = abs_indexes[one_indexes]
+                    right_thres *= 2
                 else:
+                    real_indexes = torch.cat([real_indexes, abs_indexes[indexes]])
                     break
                 loops += 1
+            if last_large and real_indexes.numel() < 2*k/3: 
+                real_indexes = torch.cat([real_indexes, abs_indexes])
+            #if hvd.rank() == 0:
+            #    print('real_indexes.numel(): %d, k: %d' % (real_indexes.numel(), k))
             #one_indexes = abs_tensor > right_thres
             #indexes = one_indexes.nonzero().data.squeeze().view(-1)
-            #indexes = indexes #[0:k]
+            indexes = real_indexes #[0:k]
             values = tensor.data[indexes] 
             #print('gaussion vs topk: ', indexes.numel(), k)
             GaussianCompressor.residuals[name].data = tensor.data + 0.0 
             GaussianCompressor.residuals[name].data[indexes] = 0.0
+            if GaussianCompressor.zc is None:
+                GaussianCompressor.zc = torch.ones(tensor.numel(), dtype=torch.float32, device=tensor.device)
+            GaussianCompressor.zc.fill_(1.0)
+            GaussianCompressor.zc[indexes] = 0.0
             return tensor, indexes, values
 
     @staticmethod
@@ -194,17 +223,33 @@ class GaussianCompressor2(GaussianCompressor):
             left_thres, right_thres = utils.gen_threshold_from_normal_distribution(1-ratio, float(mean), float(std))
             abs_tensor = torch.abs(tensor)
             loops = 0
+            old_indexes = None
+            selected_num = 0
             while loops < 5:
                 one_indexes = abs_tensor > right_thres
+                #zero_indexes = ~one_indexes
+                #abs_tensor[one_indexes] = -1
                 indexes = one_indexes.nonzero().data.squeeze().view(-1)
-                if indexes.numel() < 2*k/3:
+                selected_num += indexes.numel()
+                if selected_num < 2*k/3:
+                    if old_indexes is None:
+                        old_indexes = indexes
+                    else:
+                        old_indexes = torch.cat([old_indexes, indexes])
+                    abs_tensor[one_indexes] = -1
                     right_thres *= 0.5
-                elif indexes.numel() > 4*k/3:
+                elif selected_num > 4*k/3:
+                    if old_indexes is None:
+                        old_indexes = indexes
+                    else:
+                        #old_indexes = torch.cat([old_indexes, indexes])
+                        pass
+                    abs_tensor[~one_indexes] = -1
                     right_thres *= 1.5
                 else:
                     break
                 loops += 1
-            indexes = indexes 
+            indexes = old_indexes 
             values = tensor.data[indexes] 
             GaussianCompressor.residuals[name].data = tensor.data + 0.0 
             GaussianCompressor.residuals[name].data[indexes] = 0.0

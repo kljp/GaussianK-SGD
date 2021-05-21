@@ -5,6 +5,7 @@ nworkers="${nworkers:-4}"
 density="${density:-0.001}"
 compressor="${compressor:-topk}"
 rdma="${rdma:-1}"
+mc="${mc:-1}"
 nwpernode=4
 nstepsupdate=1
 MPIPATH=/home/esetstore/.local/openmpi-4.0.1
@@ -32,4 +33,4 @@ fi
 
 $MPIPATH/bin/mpirun --oversubscribe --prefix $MPIPATH -np $nworkers -hostfile cluster$nworkers -bind-to none -map-by slot \
     $params \
-    $PY dist_trainer.py --dnn $dnn --dataset $dataset --max-epochs $max_epochs --batch-size $batch_size --nworkers $nworkers --data-dir $data_dir --lr $lr --nsteps-update $nstepsupdate --nwpernode $nwpernode --density $density --compressor $compressor --saved-dir $GRADSPATH 
+    $PY dist_trainer.py --dnn $dnn --dataset $dataset --max-epochs $max_epochs --batch-size $batch_size --nworkers $nworkers --data-dir $data_dir --lr $lr --nsteps-update $nstepsupdate --nwpernode $nwpernode --density $density --compressor $compressor --saved-dir $GRADSPATH --momentum-correction $mc

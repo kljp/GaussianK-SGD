@@ -206,22 +206,24 @@ class DLTrainer:
             weight_decay = 0
         elif self.dataset == 'imagenet':
             #weight_decay = 5e-4
-            self.m = 0.875
-            weight_decay = 2*3.0517578125e-05
+            #self.m = 0.875
+            #weight_decay = 2*3.0517578125e-05
+            pass
 
-        decay = []
-        no_decay = []
-        for name, param in self.net.named_parameters():
-            if not param.requires_grad:
-                continue
-            if len(param.shape) == 1 or 'bn' in name or 'bias' in name:
-                no_decay.append(param)
-            else:
-                decay.append(param)
-        parameters = [{'params': no_decay, 'weight_decay': 0.},
-                    {'params': decay, 'weight_decay': weight_decay}]
+        #decay = []
+        #no_decay = []
+        #for name, param in self.net.named_parameters():
+        #    if not param.requires_grad:
+        #        continue
+        #    if len(param.shape) == 1 or 'bn' in name or 'bias' in name:
+        #        no_decay.append(param)
+        #    else:
+        #        decay.append(param)
+        #parameters = [{'params': no_decay, 'weight_decay': 0.},
+        #            {'params': decay, 'weight_decay': weight_decay}]
 
-        self.optimizer = optim.SGD(parameters, 
+        self.optimizer = optim.SGD(self.net.parameters(), 
+        #self.optimizer = optim.SGD(parameters, 
                 lr=self.lr,
                 momentum=self.m, 
                 weight_decay=weight_decay,
@@ -329,8 +331,8 @@ class DLTrainer:
         testset = torchvision.datasets.ImageFolder(testdir, transforms.Compose([
         #testset = DatasetHDF5(hdf5fn, 'val', transforms.Compose([
         #        transforms.ToPILImage(),
-                transforms.Scale(256),
-                transforms.CenterCrop(224),
+                transforms.Resize(256),
+                transforms.CenterCrop(image_size),
                 transforms.ToTensor(),
                 normalize,
             ]))
@@ -339,7 +341,7 @@ class DLTrainer:
         self.testloader = torch.utils.data.DataLoader(
             testset,
             batch_size=self.batch_size, shuffle=False,
-            num_workers=1, pin_memory=True)
+            num_workers=8, pin_memory=True)
 
     def cifar10_prepare(self):
         image_size = 32
@@ -411,6 +413,7 @@ class DLTrainer:
         self.testloader = torch.utils.data.DataLoader(
                 testset,
                 batch_size=self.batch_size, shuffle=False, num_workers=1)
+
     def ptb_prepare(self):
         # Data loading code
         # =====================================
@@ -638,7 +641,8 @@ class DLTrainer:
                     self.writer.add_scalar('cross_entropy', self.avg_loss_per_epoch/self.num_batches_per_epoch, self.train_epoch)
                     self.writer.add_scalar('top-1_acc', np.mean(self.train_acc_top1), self.train_epoch)
                 if self.rank == 0:
-                    self.test(self.train_epoch)
+                    with torch.no_grad():
+                        self.test(self.train_epoch)
                 self.sparsities = []
                 self.compression_ratios = []
                 self.communication_sizes = []
@@ -656,9 +660,9 @@ class DLTrainer:
                     utils.create_path(relative_path)
                     filename = '%s-rank%d-epoch%d.pth'%(self.dnn, self.rank, self.train_epoch)
                     fn = os.path.join(relative_path, filename)
-                    if self.train_epoch % 2== 0:
-                        self.save_checkpoint(state, fn)
-                        self.remove_dict(state)
+                    #if self.train_epoch % 2== 0:
+                    #    self.save_checkpoint(state, fn)
+                    #    self.remove_dict(state)
                 if self.train_sampler and (self.nworkers > 1):
                     self.train_sampler.set_epoch(self.train_epoch)
 
