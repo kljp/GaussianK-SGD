@@ -269,6 +269,7 @@ class RandomKCompressor():
     t = 0.
     name = 'randomk'
     counter = 0
+    zc = None
 
     @staticmethod
     def clear():
@@ -293,6 +294,11 @@ class RandomKCompressor():
             values = tensor.data[indexes] 
             RandomKCompressor.residuals[name].data = tensor.data + 0.0 
             RandomKCompressor.residuals[name].data[indexes] = 0.0
+
+            if RandomKCompressor.zc is None:
+               RandomKCompressor.zc = torch.ones(tensor.numel(), dtype=torch.float32, device=tensor.device)
+            RandomKCompressor.zc.fill_(1.0)
+            RandomKCompressor.zc[indexes] = 0.0
             return tensor, indexes, values
 
     @staticmethod

@@ -145,11 +145,9 @@ class HVDMetric(object):
         self.name = name
         self.sum = 0 #torch.tensor(0.)
         self.n = 0 #torch.tensor(0.)
-        self.val = 0.
 
     def update(self, val, n=1):
-        self.val = val.item()
-        self.sum += float(hvd.allreduce(val.detach().cpu() * n, name=self.name, average=False))
+        self.sum += float(hvd.allreduce(torch.tensor(val) * n, name=self.name, average=False))
         self.n += n * hvd.size()
 
     @property

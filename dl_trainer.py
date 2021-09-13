@@ -757,11 +757,11 @@ class DLTrainer:
     def test(self, epoch):
         self.net.eval()
 
-        test_loss = utils.HVDMetric('val_loss')
+        avg_test_loss = utils.HVDMetric('val_loss')
         test_accuracy_top1 = utils.HVDMetric('val_accuracy_top1')
         test_accuracy_top5 = utils.HVDMetric('val_accuracy_top5')
 
-        #test_loss = 0
+        test_loss = 0
         correct = 0
         top1_acc = []
         top5_acc = []
@@ -821,15 +821,13 @@ class DLTrainer:
                 loss = self.criterion(outputs, labels)
 
                 acc1, acc5 = self.cal_accuracy(outputs, labels, topk=(1, 5))
-                #top1_acc.append(float(acc1))
-                #top5_acc.append(float(acc5))
-
-                #test_loss += loss.data.item()
-                test_loss.update(loss)
-                test_accuracy_top1.update(acc1)
-                test_accuracy_top5.update(acc5)
+                top1_acc.append(float(acc1))
+                top5_acc.append(float(acc5))
+                test_loss += loss.data.item()
             total += labels.size(0)
             total_iters += 1
+        test_accuracy_top1.update(np.mean(top1_acc))
+        test_accuracy_top5.update(np.mean(top5_acc))
         #test_loss /= total_iters
         if self.dnn not in ['lstm', 'lstman4']:
             acc = np.mean(top1_acc)
@@ -841,9 +839,9 @@ class DLTrainer:
             wer = total_wer / len(self.testloader.dataset)
             acc = wer
             acc5 = 0.0
-        #loss = float(test_loss)/total
-        loss = test_loss.avg
-        logger.info('Epoch %d, lr: %f, val loss: %f, val top-1 acc: %f, top-5 acc: %f' % (epoch, self.lr, test_loss.avg, test_accuracy_top1.avg, test_accuracy_top5.avg))
+        loss = float(test_loss)/total
+        #loss = test_loss.avg
+        logger.info('Epoch %d, lr: %f, val loss: %f, val top-1 acc: %f, top-5 acc: %f' % (epoch, self.lr, test_loss, test_accuracy_top1.avg, test_accuracy_top5.avg))
         if self.rank == 0:
             wandb.log({
                 "val top-1 acc": test_accuracy_top1.avg, 
