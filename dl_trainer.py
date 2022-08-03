@@ -26,7 +26,7 @@ import logging
 import utils
 import math
 #from tensorboardX import SummaryWriter
-from datasets import DatasetHDF5
+#from datasets import DatasetHDF5
 from profiling import benchmark
 #writer = SummaryWriter()
 
@@ -625,7 +625,7 @@ class DLTrainer:
             correct = pred.eq(target.view(1, -1).expand_as(pred))
             res = []
             for k in topk:
-                correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
+                correct_k = correct[:k]contiguous().view(-1).float().sum(0, keepdim=True)
                 res.append(correct_k.mul_(100.0 / batch_size))
             return res
 
